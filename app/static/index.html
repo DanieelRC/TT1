@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TT 2027-A048 · Etapa 1</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 0 auto; padding: 16px; background: #fff; color: #111; }
+  fieldset { margin-bottom: 12px; }
+  label { display: inline-block; margin: 4px 12px 4px 0; }
+  input[type=number] { width: 80px; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border: 1px solid #ccc; padding: 4px 8px; text-align: left; font-size: 14px; }
+  tr.sel { background: #eef; }
+  tr[data-id] { cursor: pointer; }
+  .crops { display: flex; flex-wrap: wrap; gap: 6px; }
+  .crop { font-size: 11px; text-align: center; }
+  .crop img { height: 140px; display: block; }
+  .mej { color: #b60; font-weight: bold; }
+  .ejemplo img { max-width: 49%; }
+  pre { background: #f4f4f4; padding: 8px; overflow: auto; }
+  nav button.activa { font-weight: bold; }
+  .oculto { display: none; }
+  #eval-img img { max-width: 100%; }
+</style>
+</head>
+<body>
+<h1>Etapa 1: detección y recortes de personas</h1>
+
+<nav>
+  <button data-tab="procesar" class="activa">Procesar video</button>
+  <button data-tab="evaluacion">Evaluación de detección</button>
+</nav>
+
+<div id="tab-procesar">
+<form id="form">
+  <fieldset>
+    <legend>Subir video</legend>
+    <input type="file" name="archivo" accept=".mp4,.avi,.mov,.mkv" required>
+    <br>
+    <label>Intervalo (1 de cada N frames) <input type="number" name="intervalo" value="10" min="1"></label>
+    <label>Confianza mínima <input type="number" name="confianza" value="0.25" step="0.05" min="0.05" max="0.95"></label>
+    <label>Tamaño de entrada <input type="number" name="imgsz" value="1280" step="32" min="320" max="1920"></label>
+    <label>Rastreador
+      <select name="rastreador"><option value="bytetrack.yaml">ByteTrack</option><option value="botsort.yaml">BoT-SORT</option></select>
+    </label>
+    <br>
+    <label>Umbral de ganancia para mejorar brillo <input type="number" name="umbral_ganancia" value="1.5" step="0.05" min="1"></label>
+    <label><input type="checkbox" name="clahe" value="true"> CLAHE suave</label>
+    <label><input type="checkbox" name="denoise" value="true"> Reducir ruido</label>
+    <br>
+    <button type="submit">Procesar</button> <span id="msg"></span>
+  </fieldset>
+</form>
+
+<h2>Trabajos</h2>
+<table>
+  <thead><tr><th>Video</th><th>Estado</th><th>Progreso</th><th>Personas</th><th>Frames mejorados</th><th>Tiempo</th></tr></thead>
+  <tbody id="jobs"></tbody>
+</table>
+
+<div id="detalle"></div>
+</div>
+
+<div id="tab-evaluacion" class="oculto">
+  <p>Resultados de <code>eval/evaluar_deteccion.py</code> sobre el frame etiquetado (.png) de cada video del dataset.
+     <b>Recall</b> = personas del .txt cuyo punto cae dentro de una caja de YOLO / personas del .txt.
+     El conteo de YOLO casi nunca coincide con el del .txt porque el .txt no anota a todas las personas visibles.</p>
+  <label>Corrida <select id="eval-corrida"></select></label>
+  <h3>Resumen por configuración</h3>
+  <table>
+    <thead><tr><th>Modelo</th><th>Tamaño de entrada</th><th>Recall</th><th>Detectadas / anotadas</th><th>Archivos al 100 %</th><th>Mismo conteo</th><th>Error medio de conteo</th></tr></thead>
+    <tbody id="eval-resumen"></tbody>
+  </table>
+  <div id="eval-invalidos"></div>
+  <div id="eval-img"></div>
+  <div id="eval-detalle"></div>
+</div>
+
+<script>
+let seleccionado = null;
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('activa', x === b));
+  document.getElementById('tab-procesar').classList.toggle('oculto', b.dataset.tab !== 'procesar');
+  document.getElementById('tab-evaluacion').classList.toggle('oculto', b.dataset.tab !== 'evaluacion');
+  if (b.dataset.tab === 'evaluacion' && !evalCargada) cargarEvaluaciones();
+});
+
+let evalCargada = false, evalDatos = null, evalConfig = null;
+const pct = x => (100 * x).toFixed(1) + ' %';
+
+async function cargarEvaluaciones() {
+  evalCargada = true;
+  const corridas = await (await fetch('/api/evaluaciones')).json();
+  const sel = document.getElementById('eval-corrida');
+  if (!corridas.length) { document.getElementById('eval-resumen').innerHTML = '<tr><td colspan="7">No hay evaluaciones. Corre eval/evaluar_deteccion.py.</td></tr>'; return; }
+  sel.innerHTML = corridas.map(c => `<option value="${esc(c.id)}">${esc(c.id)} (${c.configuraciones.length} configuraciones)</option>`).join('');
+  sel.onchange = () => cargarCorrida(sel.value);
+  cargarCorrida(corridas[0].id);
+}
+
+async function cargarCorrida(id) {
+  evalDatos = await (await fetch('/api/evaluaciones/' + encodeURIComponent(id))).json();
+  const mejor = Math.max(...evalDatos.configuraciones.map(c => c.recall_global));
+  document.getElementById('eval-resumen').innerHTML = evalDatos.configuraciones.map(c => `
+    <tr data-config="${esc(c.configuracion)}" style="cursor:pointer" class="${c.configuracion === evalConfig ? 'sel' : ''}">
+      <td>${esc(c.modelo)}</td><td>${c.imgsz}</td>
+      <td>${c.recall_global === mejor ? '<b>' + pct(c.recall_global) + '</b>' : pct(c.recall_global)}</td>
+      <td>${c.personas_detectadas} / ${c.personas_anotadas}</td>
+      <td>${c.archivos_con_100pct} / ${evalDatos.archivos_validos}</td>
+      <td>${c.archivos_con_mismo_conteo} / ${evalDatos.archivos_validos}</td>
+      <td>${c.error_absoluto_medio_conteo}</td>
+    </tr>`).join('');
+  document.querySelectorAll('#eval-resumen tr').forEach(tr => tr.onclick = () => mostrarConfig(tr.dataset.config));
+  const inv = evalDatos.archivos_invalidos;
+  document.getElementById('eval-invalidos').innerHTML = inv.length ? `<details><summary>${inv.length} archivos inválidos (no entran en las métricas)</summary>
+    <table><tr><th>Archivo</th><th>Motivo</th><th>Filas</th></tr>${inv.map(i => `<tr><td>${esc(i.archivo)}</td><td>${esc(i.motivo)}</td><td>${i.filas}</td></tr>`).join('')}</table></details>` : '';
+  // Por defecto, la configuracion que usa la app (yolo26s, 1280) o la de mayor recall
+  const nombres = evalDatos.configuraciones.map(c => c.configuracion);
+  const inicial = [evalConfig, 'yolo26s_1280'].find(c => nombres.includes(c))
+    ?? evalDatos.configuraciones.find(c => c.recall_global === mejor).configuracion;
+  mostrarConfig(inicial);
+}
+
+function mostrarConfig(config) {
+  evalConfig = config;
+  document.querySelectorAll('#eval-resumen tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.config === config));
+  const soloFallos = document.getElementById('eval-solo-fallos')?.checked ?? true;
+  const filas = evalDatos.detalle.filter(f => f.configuracion === config && (!soloFallos || +f.recall < 1))
+    .sort((a, b) => a.recall - b.recall);
+  document.getElementById('eval-img').innerHTML = '';
+  document.getElementById('eval-detalle').innerHTML = `<h3>Detalle por archivo: ${esc(config)}</h3>
+    <label><input type="checkbox" id="eval-solo-fallos" ${soloFallos ? 'checked' : ''}> Solo archivos con personas no detectadas</label>
+    (${filas.length} archivos)
+    <table><thead><tr><th>Archivo</th><th>Personas .txt</th><th>Detectadas</th><th>Recall</th><th>Detecciones YOLO</th><th>Dif. conteo</th><th>Ids no detectados</th><th></th></tr></thead>
+    <tbody>${filas.map(f => `<tr><td>${esc(f.archivo)}</td><td>${f.personas_txt}</td><td>${f.personas_txt_detectadas}</td>
+      <td>${pct(+f.recall)}</td><td>${f.detecciones_yolo}</td><td>${f.diferencia_conteo > 0 ? '+' : ''}${f.diferencia_conteo}</td>
+      <td>${esc(f.ids_no_detectados)}</td>
+      <td>${f.imagen ? `<a href="#" data-img="${esc(f.imagen)}" data-nombre="${esc(f.archivo)}">ver imagen</a>` : ''}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('eval-solo-fallos').onchange = () => mostrarConfig(config);
+  document.querySelectorAll('#eval-detalle a[data-img]').forEach(a => a.onclick = e => {
+    e.preventDefault();
+    const cont = document.getElementById('eval-img');
+    cont.innerHTML = `<h3>${esc(a.dataset.nombre)}</h3><p>Caja verde = detección de YOLO · punto verde = persona del .txt detectada · punto rojo = no detectada</p><img src="${esc(a.dataset.img)}">`;
+    cont.scrollIntoView({ behavior: 'smooth' });
+  });
+}
+
+document.getElementById('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.textContent = 'Subiendo...';
+  const r = await fetch('/api/videos', { method: 'POST', body: new FormData(e.target) });
+  const data = await r.json();
+  if (!r.ok) { msg.textContent = 'Error: ' + data.detail; return; }
+  msg.textContent = 'En cola.';
+  seleccionado = data.id;
+  e.target.reset();
+  refrescar();
+});
+
+function progreso(j) {
+  if (!j.progreso) return '';
+  const p = j.progreso;
+  return `<progress max="${p.total}" value="${p.procesados}"></progress> ${p.procesados}/${p.total}`;
+}
+
+async function refrescar() {
+  const jobs = await (await fetch('/api/jobs')).json();
+  document.getElementById('jobs').innerHTML = jobs.map(j => `
+    <tr data-id="${j.id}" class="${j.id === seleccionado ? 'sel' : ''}">
+      <td>${esc(j.video)}</td><td>${j.estado}</td><td>${progreso(j)}</td>
+      <td>${j.stats?.trayectorias ?? ''}</td>
+      <td>${j.stats ? j.stats.frames_mejorados + ' / ' + j.stats.frames_muestreados : ''}</td>
+      <td>${j.stats ? j.stats.tiempo_s + ' s' : ''}</td>
+    </tr>`).join('');
+  document.querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => { seleccionado = tr.dataset.id; mostrado = null; refrescar(); });
+  const sel = jobs.find(j => j.id === seleccionado);
+  if (sel) mostrar(sel);
+}
+
+let mostrado = null;
+async function mostrar(j) {
+  const cont = document.getElementById('detalle');
+  const clave = j.id + j.estado;
+  if (mostrado === clave) return;
+  if (j.estado === 'error') { cont.innerHTML = `<h2>${esc(j.video)}: error</h2><pre>${esc(j.log)}</pre>`; mostrado = clave; return; }
+  if (j.estado !== 'terminado') { cont.innerHTML = `<h2>${esc(j.video)}: ${j.estado}...</h2>`; return; }
+  mostrado = clave;
+  const d = await (await fetch('/api/jobs/' + j.id)).json();
+  const base = '/salidas/' + j.id + '/';
+
+  let html = `<h2>${esc(j.video)}</h2>
+    <p>${d.stats.trayectorias} personas ·
+       ${d.stats.frames_mejorados} de ${d.stats.frames_muestreados} frames con brillo mejorado ·
+       ${d.stats.frames_por_segundo} frames/s · <a href="${base}metadata.json" download>metadata.json</a></p>`;
+  if (d.ejemplo) html += `<div class="ejemplo"><h3>Mejora de brillo (antes / después)</h3>
+    <img src="${base}ejemplo_antes.jpg"> <img src="${base}ejemplo_despues.jpg"></div>`;
+  html += '<h3>Un recorte por persona</h3><div class="crops">';
+  for (const r of d.metadata.recortes) {
+    html += `<div class="crop"><img loading="lazy" src="${base}${r.ruta_jpg}">
+      <b>#${r.id_trayectoria}</b> · ${seg(r.timestamp_s)} · ${r.confianza.toFixed(2)}<br>
+      visible ${seg(r.primera_aparicion_s)}–${seg(r.ultima_aparicion_s)}${r.mejorado ? '<br><span class="mej">mejorado</span>' : ''}</div>`;
+  }
+  cont.innerHTML = html + '</div>';
+}
+
+function seg(s) { const m = Math.floor(s / 60); return m + ':' + (s % 60).toFixed(1).padStart(4, '0'); }
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+refrescar();
+setInterval(refrescar, 1000);
+</script>
+</body>
+</html>

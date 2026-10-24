@@ -1,0 +1,14 @@
+# torch/torchvision se instalan ANTES y aparte (ver README):
+#   CPU: pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+#   GPU: pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+
+# Etapa 1: deteccion y tracking
+ultralytics==8.4.129
+lap==0.5.13
+opencv-python==4.11.0.86
+numpy==1.26.4
+
+# API web
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32

@@ -1,0 +1,31 @@
+# --- Datos sensibles: videos y fotos de personas, anotaciones, recortes ---
+data/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.png
+*.jpg
+*.jpeg
+*.zip
+*.csv
+
+# --- Pesos de modelos (pesados, se descargan aparte) ---
+models/
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# --- Secretos y configuracion local ---
+.env
+.env.*
+*.key
+*.pem
+config.local.yaml
+
+# --- Entorno y cache ---
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
